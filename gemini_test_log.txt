@@ -1,0 +1,40 @@
+============================================================
+DETAILED GEMINI API TEST
+============================================================
+
+📋 API Key Information:
+   Exists: true
+   Length: 39
+   Full Key: AIzaSyAzJyndM2sMIXogLfYg2z4bYjbdJsWw3fk
+   Starts with 'AIza': true
+
+🔄 Testing Gemini API...
+   Sending request to Gemini...
+
+============================================================
+❌ ERROR: GEMINI API TEST FAILED
+============================================================
+
+📋 Error Details:
+   Type: GoogleGenerativeAIFetchError
+   Status: 404
+   Status Text: Not Found
+   Message: [GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent: [404 Not Found] models/gemini-1.5-flash is not found for API version v1beta, or is not supported for generateContent. Call ListModels to see the list of available models and their supported methods.
+
+💡 404 Error - Possible Causes:
+   1. API key is invalid
+   2. Gemini API not enabled for this key
+   3. Wrong API endpoint
+
+🔧 Solutions:
+   1. Verify the API key at: https://aistudio.google.com/app/apikey
+   2. Make sure you created the key for 'Gemini API'
+   3. Try creating a brand new API key
+
+📋 Full Error:
+{
+  "status": 404,
+  "statusText": "Not Found"
+}
+
+============================================================

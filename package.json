@@ -1,0 +1,42 @@
+{
+  "name": "ravin-assistant-backend",
+  "version": "1.0.0",
+  "description": "Backend API for Ravin-Assistant - AI-powered personal assistant",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "ai",
+    "assistant",
+    "groq",
+    "supabase"
+  ],
+  "author": "Ravin",
+  "license": "MIT",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@google-cloud/text-to-speech": "^6.4.0",
+    "@mozilla/readability": "^0.5.0",
+    "@supabase/supabase-js": "^2.83.0",
+    "@xenova/transformers": "^2.17.2",
+    "axios": "^1.13.2",
+    "cheerio": "^1.1.2",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "groq-sdk": "^0.36.0",
+    "jsdom": "^27.2.0",
+    "multer": "^2.0.2",
+    "node-gtts": "^2.0.2",
+    "node-html-parser": "^6.1.13",
+    "pdf-parse": "^1.1.1",
+    "playwright": "^1.56.1",
+    "puppeteer": "^23.11.1",
+    "tesseract.js": "^5.1.1"
+  }
+}
