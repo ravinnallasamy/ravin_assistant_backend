@@ -13,8 +13,9 @@ app.use(express.json());
 app.use('/public/audio', express.static(path.join(__dirname, 'tmp')));
 
 // API Routes
-app.use('/admin', adminRoutes);
-app.use('/public', publicRoutes);
+// API Routes
+app.use('/api/admin', adminRoutes);
+app.use('/api/public', publicRoutes);
 
 // Health Check
 app.get('/', (req, res) => {
