@@ -26,7 +26,6 @@ exports.textToSpeechMale = async function (text) {
         return null;
     }
 };
-
 exports.speechToText = async function (base64Audio) {
     try {
         const Groq = require("groq-sdk");

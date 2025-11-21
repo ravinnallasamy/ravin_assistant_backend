@@ -28,7 +28,6 @@ exports.askQuestion = async (req, res) => {
         let { question, voiceBase64 } = req.body;
 
         // 🎤 1️⃣ SPEECH → TEXT
-        // 🎤 1️⃣ SPEECH → TEXT
         // Only if voiceBase64 is provided AND question is empty
         if (voiceBase64 && (!question || question.trim() === "")) {
             console.log("🎤 Converting voice to text...");
@@ -84,7 +83,7 @@ exports.askQuestion = async (req, res) => {
 
         // 🧠 4️⃣ Build Optimized Prompt (minimal to save tokens)
         const prompt = context
-            ? `You are my personal AI assistant. Answer in first person using "I/my".
+            ? `You are my personal AI assistant representing me. Answer in first person using "my/I/me".
             
 DATA:
 ${context}
@@ -92,14 +91,14 @@ ${context}
 Q: ${question}
 
 RULES:
-- If asked about "me" (background, skills, projects, etc.), use the DATA.
-- If asked for contact info (phone, email, links), LOOK IN DATA. If found, provide it. If not, say "I don't have that info public."
-- If question is unrelated (weather, sports, etc.), politely say "I only know about my professional background."
-- Keep answers short (2-3 sentences), professional but friendly.
-- Use "My" not "Your".`
+- If question is about my skills, education, experience, projects, background → Answer from DATA
+- If question is unrelated (weather, sports, general knowledge, etc.) → Say: "That's outside my scope. Ask me about my professional background, skills, or experience!"
+- Keep answers 1-3 sentences, smart and catchy
+- Use "my" not "your" (e.g., "My skills include..." not "Your skills...")
+- Add examples when helpful`
             : `Q: ${question}
 
-No data available. If this is a greeting ("hi", "hello"), say "Hi! I'm an AI assistant. Ask me about my professional background." Otherwise, say "I don't have that information yet."`;
+No data available. Say: "I don't have that information yet. Please ask about my professional background, skills, or experience!"`;
 
         // 🤖 5️⃣ Get Answer from GROQ with error handling
         let answerText;
@@ -128,8 +127,9 @@ No data available. If this is a greeting ("hi", "hello"), say "Hi! I'm an AI ass
             }
         }
 
-        // 🔊 6️⃣ Convert Answer → Voice
-        const audioUrl = await textToSpeechMale(answerText);
+        // 🔊 6️⃣ Convert Answer → Voice (DISABLED - Using Client-Side TTS)
+        // const audioUrl = await textToSpeechMale(answerText);
+        const audioUrl = null;
 
         // 📦 7️⃣ Store QnA
         await supabase.from("qna").insert([{ question, answer: answerText }]);
