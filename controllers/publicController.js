@@ -28,7 +28,9 @@ exports.askQuestion = async (req, res) => {
         let { question, voiceBase64 } = req.body;
 
         // 🎤 1️⃣ SPEECH → TEXT
-        if (voiceBase64) {
+        // 🎤 1️⃣ SPEECH → TEXT
+        // Only if voiceBase64 is provided AND question is empty
+        if (voiceBase64 && (!question || question.trim() === "")) {
             console.log("🎤 Converting voice to text...");
             const converted = await speechToText(voiceBase64);
 
@@ -51,10 +53,34 @@ exports.askQuestion = async (req, res) => {
         // 🔍 3️⃣ Vector Search - Get top 5 most relevant chunks
         const matches = await similaritySearch(questionEmbedding, 5);
 
+        // 🔍 3.5️⃣ Explicitly fetch BIO if question is about "yourself" or "who are you"
+        let bioContext = "";
+        const bioKeywords = ["yourself", "who are you", "your background", "about you", "introduction"];
+        if (bioKeywords.some(k => question.toLowerCase().includes(k))) {
+            const { data: profile } = await supabase
+                .from("profile")
+                .select("bio, scraped_resume, scraped_portfolio")
+                .single();
+
+            if (profile) {
+                if (profile.bio) bioContext += `BIO: ${profile.bio}\n\n`;
+
+                // If bio is short or missing, add resume summary
+                if (profile.scraped_resume) {
+                    bioContext += `RESUME SUMMARY: ${profile.scraped_resume.substring(0, 1000)}\n\n`;
+                }
+
+                // Add portfolio about section if available
+                if (profile.scraped_portfolio) {
+                    bioContext += `PORTFOLIO HIGHLIGHTS: ${profile.scraped_portfolio.substring(0, 1000)}\n\n`;
+                }
+            }
+        }
+
         // Build concise context (limit to save tokens)
-        const context = matches.length
-            ? matches.map(m => m.chunk).join("\n").substring(0, 1500) // Limit context to 1500 chars
-            : "";
+        const context = (bioContext + (matches.length
+            ? matches.map(m => m.chunk).join("\n")
+            : "")).substring(0, 2000); // Increased limit slightly to accommodate bio
 
         // 🧠 4️⃣ Build Optimized Prompt (minimal to save tokens)
         const prompt = context
