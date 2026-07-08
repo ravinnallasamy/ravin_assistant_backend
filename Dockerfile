@@ -1,4 +1,4 @@
-FROM node:18-slim
+FROM node:20-slim
 
 # Chromium system dependencies required for Puppeteer's headless Chrome to
 # launch (portfolio scraping in services/linkScraper.js). Render's default
