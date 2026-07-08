@@ -2,15 +2,26 @@
 const gTTS = require("node-gtts")("en");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
+const Groq = require("groq-sdk");
+
+const TMP_DIR = path.join(__dirname, "..", "tmp");
+
+function ensureTmpDir() {
+    if (!fs.existsSync(TMP_DIR)) {
+        fs.mkdirSync(TMP_DIR, { recursive: true });
+    }
+}
+
+function randomFileName(prefix, ext) {
+    return `${prefix}_${Date.now()}_${crypto.randomBytes(8).toString("hex")}.${ext}`;
+}
 
 exports.textToSpeechMale = async function (text) {
     try {
-        const fileName = `voice_${Date.now()}.mp3`;
-        const filePath = path.join(__dirname, "..", "tmp", fileName);
-
-        if (!fs.existsSync(path.dirname(filePath))) {
-            fs.mkdirSync(path.dirname(filePath), { recursive: true });
-        }
+        ensureTmpDir();
+        const fileName = randomFileName("voice", "mp3");
+        const filePath = path.join(TMP_DIR, fileName);
 
         await new Promise((resolve, reject) => {
             gTTS.save(filePath, text, (err) => {
@@ -19,22 +30,19 @@ exports.textToSpeechMale = async function (text) {
             });
         });
 
-        // Return public path
         return `/public/audio/${fileName}`;
     } catch (err) {
         console.error("TTS Error:", err);
         return null;
     }
 };
-exports.speechToText = async function (base64Audio) {
-    try {
-        const Groq = require("groq-sdk");
-        const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-        // Create a temporary file for the audio
-        const filePath = path.join(__dirname, "..", "tmp", `input_${Date.now()}.m4a`); // m4a or wav depending on input
-        // Ideally we should know the mime type. For now assuming m4a/webm from frontend.
-        // But Groq Whisper supports multiple formats.
+exports.speechToText = async function (base64Audio) {
+    ensureTmpDir();
+    const filePath = path.join(TMP_DIR, randomFileName("input", "m4a"));
+
+    try {
+        const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
         const buffer = Buffer.from(base64Audio, 'base64');
         fs.writeFileSync(filePath, buffer);
@@ -46,12 +54,13 @@ exports.speechToText = async function (base64Audio) {
             temperature: 0.0
         });
 
-        // Cleanup
-        fs.unlinkSync(filePath);
-
         return translation.text;
     } catch (err) {
         console.error("STT Error:", err);
         return null;
+    } finally {
+        fs.unlink(filePath, (err) => {
+            if (err && err.code !== 'ENOENT') console.error("STT temp file cleanup error:", err.message);
+        });
     }
 };

@@ -8,6 +8,11 @@ const puppeteer = require("puppeteer");
 const { JSDOM } = require("jsdom");
 const { Readability } = require("@mozilla/readability");
 const { parse } = require("node-html-parser");
+const { assertSafeUrl } = require("./urlGuard");
+
+const MAX_REDIRECTS = 3;
+const FETCH_TIMEOUT_MS = 10000;
+const GITHUB_USERNAME_RE = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$/;
 
 /* -----------------------------------------------------
    CLEAN TEXT (for embeddings)
@@ -16,11 +21,41 @@ function cleanText(str = "") {
     return str.replace(/[\s\n\r\t]+/g, " ").trim();
 }
 
+// Wraps axios.get with SSRF protection: resolves+validates the URL before
+// the request, and again on every redirect hop (axios does not re-validate
+// redirect targets itself).
+async function safeGet(rawUrl, opts = {}) {
+    await assertSafeUrl(rawUrl);
+
+    return axios.get(rawUrl, {
+        timeout: FETCH_TIMEOUT_MS,
+        maxRedirects: 0, // handle redirects manually so each hop is validated
+        validateStatus: (s) => s < 400,
+        ...opts,
+    }).catch(async (err) => {
+        const redirect = err.response && [301, 302, 303, 307, 308].includes(err.response.status);
+        const location = err.response && err.response.headers && err.response.headers.location;
+
+        if (redirect && location && (opts._redirectCount || 0) < MAX_REDIRECTS) {
+            const nextUrl = new URL(location, rawUrl).toString();
+            return safeGet(nextUrl, { ...opts, _redirectCount: (opts._redirectCount || 0) + 1 });
+        }
+        throw err;
+    });
+}
+
 /* -----------------------------------------------------
    MASTER SCRAPER ROUTER
 ----------------------------------------------------- */
 async function scrapeLink(url, type = "generic") {
     if (!url) return "";
+
+    try {
+        await assertSafeUrl(url);
+    } catch (err) {
+        console.error("scrapeLink blocked unsafe URL:", err.message);
+        return "";
+    }
 
     try {
         if (type === "github" || url.includes("github.com"))
@@ -46,11 +81,18 @@ async function scrapeLink(url, type = "generic") {
 ========================================================= */
 async function scrapeGithub(url) {
     try {
-        const username = url.split("github.com/")[1].split("/")[0];
+        const rawSegment = url.split("github.com/")[1];
+        const username = rawSegment ? rawSegment.split("/")[0].split("?")[0] : "";
+
+        if (!GITHUB_USERNAME_RE.test(username)) {
+            console.error("GitHub scrape rejected: invalid username in URL");
+            return "";
+        }
+
         let finalText = "";
 
         // Fetch GitHub Profile
-        const profileRes = await axios.get(`https://github.com/${username}`, {
+        const profileRes = await safeGet(`https://github.com/${username}`, {
             headers: { "User-Agent": "Mozilla/5.0" }
         });
 
@@ -64,7 +106,7 @@ async function scrapeGithub(url) {
 
         // Pinned repos
         let pinnedRepos = [];
-        $(".pinned-item-list-item").each((i, el) => {
+        $(".pinned-item-list-item").each((_, el) => {
             pinnedRepos.push(
                 `Pinned Repo: ${$(el).find("span.repo").text().trim()} | ${$(el).find(".pinned-item-desc").text().trim()}`
             );
@@ -74,7 +116,7 @@ async function scrapeGithub(url) {
             finalText += "\nPinned Repositories:\n" + pinnedRepos.join("\n");
 
         // Fetch Repositories Page
-        const reposRes = await axios.get(
+        const reposRes = await safeGet(
             `https://github.com/${username}?tab=repositories`,
             { headers: { "User-Agent": "Mozilla/5.0" } }
         );
@@ -82,8 +124,9 @@ async function scrapeGithub(url) {
         $ = cheerio.load(reposRes.data);
         let allRepos = [];
 
-        $(".source").each((i, repo) => {
-            allRepos.push($(repo).find("a").text().trim());
+        $(".source").each((_, repo) => {
+            const repoName = $(repo).find("a").text().trim();
+            if (/^[a-zA-Z0-9._-]+$/.test(repoName)) allRepos.push(repoName);
         });
 
         finalText += `\nAll Repositories:\n${allRepos.join(", ")}\n`;
@@ -97,8 +140,8 @@ async function scrapeGithub(url) {
 
             for (let rawUrl of rawUrls) {
                 try {
-                    const r = await axios.get(rawUrl);
-                    return `\nREADME of ${repo}:\n${r.data.substring(0, 3000)}`;
+                    const r = await safeGet(rawUrl);
+                    return `\nREADME of ${repo}:\n${String(r.data).substring(0, 3000)}`;
                 } catch { }
             }
             return "";
@@ -122,6 +165,8 @@ async function scrapePortfolio(url) {
     let browser;
 
     try {
+        await assertSafeUrl(url);
+
         browser = await puppeteer.launch({
             headless: "new",
             args: [
@@ -135,14 +180,23 @@ async function scrapePortfolio(url) {
 
         const page = await browser.newPage();
 
-        // Block images, css, fonts for speed
+        // Block images, css, fonts for speed, and re-validate the target of
+        // every navigation/redirect the page makes (blocks SSRF via
+        // client-side redirects to internal hosts).
         await page.setRequestInterception(true);
-        page.on('request', (req) => {
-            if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
-                req.abort();
-            } else {
-                req.continue();
+        page.on('request', async (req) => {
+            const resourceType = req.resourceType();
+            if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+                return req.abort();
             }
+            if (resourceType === 'document') {
+                try {
+                    await assertSafeUrl(req.url());
+                } catch {
+                    return req.abort();
+                }
+            }
+            req.continue();
         });
 
         await page.setUserAgent(
@@ -207,12 +261,11 @@ async function scrapePortfolio(url) {
 ========================================================= */
 async function fastFallback(url) {
     try {
-        const { data } = await axios.get(url, {
+        const { data } = await safeGet(url, {
             headers: { "User-Agent": "Mozilla/5.0" },
-            timeout: 5000
         });
 
-        const cleaned = data
+        const cleaned = String(data)
             .replace(/<script[\s\S]*?<\/script>/gi, "")
             .replace(/<style[\s\S]*?<\/style>/gi, "")
             .replace(/<img[^>]*>/gi, "")
