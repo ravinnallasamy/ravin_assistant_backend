@@ -42,39 +42,45 @@ function sanitizeForPrompt(text, maxLength) {
         .slice(0, maxLength);
 }
 
-// Expands a raw user question into a short, keyword-dense search query
-// tailored for embedding + vector search against resume/bio/portfolio text.
-// This runs BEFORE embedding, not instead of it — the LLM never sees or
-// touches the retrieved DATA here, it only reformulates the QUESTION so the
-// local MiniLM embedder has better surface-level overlap with how a resume
-// is actually worded (e.g. "what do you do" → "current role job title
-// profession occupation work responsibilities"). On any Groq failure this
-// falls back to the original question untouched.
-async function rewriteQueryForRetrieval(question) {
-    const safeQuestion = sanitizeForPrompt(question, 500);
-    try {
-        const completion = await groqClient.chat.completions.create({
-            model: GROQ_CHAT_MODEL,
-            messages: [
-                {
-                    role: "user",
-                    content: `Rewrite the question below into a short list of search keywords/phrases suitable for finding matching content in someone's resume, bio, and portfolio. Expand abbreviations and casual phrasing into likely resume terminology (e.g. skills, job titles, technologies, companies, education, contact info). Output ONLY the keywords/phrases, space-separated, no explanations, no punctuation, max 30 words.
+// Expands a raw user question into a keyword-dense search query tailored for
+// embedding + vector search against resume/bio/portfolio text — WITHOUT an
+// extra LLM round-trip. A separate Groq "rewrite" call was tried and worked,
+// but doubled request latency (2 sequential Groq calls before any answer
+// could start). This does the same job with a static synonym/expansion map:
+// MiniLM is a small local embedder with no query/document task-type
+// distinction, so it matches casual phrasing to dense resume text poorly
+// (e.g. "what tech do you use" vs "Skills: Node.js, React...") — appending a
+// few resume-flavored synonyms for words that appear in the question closes
+// most of that gap for zero added latency.
+const RETRIEVAL_SYNONYMS = {
+    tech: "technology technologies stack tools",
+    work: "job role experience employment",
+    job: "role position employment career",
+    do: "role responsibilities work",
+    skills: "skills technologies proficiencies expertise",
+    project: "projects work portfolio built",
+    projects: "projects work portfolio built",
+    education: "education degree university college qualification",
+    study: "education degree university college",
+    experience: "experience work history background",
+    company: "company employer organization",
+    contact: "contact phone email reach",
+    reach: "contact phone email",
+    phone: "phone number contact",
+    email: "email address contact",
+    background: "background bio profile summary about",
+    yourself: "bio profile summary background introduction",
+};
 
-<QUESTION>
-${safeQuestion}
-</QUESTION>`,
-                },
-            ],
-            max_tokens: 60,
-            temperature: 0,
-        });
-
-        const rewritten = completion.choices[0].message.content.trim();
-        return rewritten || question;
-    } catch (err) {
-        console.error("Query rewrite failed, using raw question:", err.message);
-        return question;
+function expandQueryForRetrieval(question) {
+    const words = question.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
+    const extras = new Set();
+    for (const w of words) {
+        if (RETRIEVAL_SYNONYMS[w]) {
+            RETRIEVAL_SYNONYMS[w].split(" ").forEach((term) => extras.add(term));
+        }
     }
+    return extras.size ? `${question} ${Array.from(extras).join(" ")}` : question;
 }
 
 // -----------------------------
@@ -108,18 +114,12 @@ exports.askQuestion = async (req, res) => {
 
         console.log("📌 Question:", question);
 
-        // 🧭 2️⃣ Rewrite the raw question into a retrieval-friendly search query
-        // before embedding it. MiniLM is a small local embedder with no
-        // query/document task-type distinction (unlike Gemini's embedding API),
-        // so it matches casual/conversational phrasing to dense resume text
-        // poorly — e.g. "what tech do you use" doesn't score well against
-        // "Skills: Node.js, React, PostgreSQL...". Asking Groq to expand the
-        // question into the keywords/terms likely to appear in a resume/bio
-        // closes that gap. Falls back to the raw question on any failure so a
-        // Groq hiccup never blocks search.
-        const retrievalQuery = await rewriteQueryForRetrieval(question);
+        // 🧭 2️⃣ Expand the raw question into a retrieval-friendly search query
+        // before embedding it (local, no LLM round-trip — see comment above
+        // expandQueryForRetrieval).
+        const retrievalQuery = expandQueryForRetrieval(question);
 
-        // 🔍 3️⃣ Embed the rewritten query (query-side embedding, distinct from
+        // 🔍 3️⃣ Embed the expanded query (query-side embedding, distinct from
         // document embedding) and vector search for the top 5 relevant chunks.
         let matches = [];
         try {
@@ -193,17 +193,39 @@ ${safeQuestion}
 
 No data available. Say: "I don't have that information yet. Please ask about my professional background, skills, or experience!"`;
 
-        // 🤖 5️⃣ Get Answer from Groq with error handling
-        let answerText;
+        // 🤖 5️⃣ Stream the answer from Groq over Server-Sent Events. Streaming
+        // doesn't reduce total generation time, but it gets the first tokens
+        // to the browser within a few hundred ms instead of making the user
+        // stare at a spinner for the full ~1-2s generation — the perceived
+        // speedup this endpoint needed. Falls back to a single non-streamed
+        // error message on failure (the SSE stream itself carries the error).
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "keep-alive");
+        res.flushHeaders();
+
+        const sendEvent = (event, data) => {
+            res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        };
+
+        let answerText = "";
 
         try {
-            const completion = await groqClient.chat.completions.create({
+            const stream = await groqClient.chat.completions.create({
                 model: GROQ_CHAT_MODEL,
                 messages: [{ role: "user", content: prompt }],
                 max_tokens: 150,
                 temperature: 0.7,
+                stream: true,
             });
-            answerText = completion.choices[0].message.content.trim();
+
+            for await (const part of stream) {
+                const delta = part.choices[0]?.delta?.content || "";
+                if (delta) {
+                    answerText += delta;
+                    sendEvent("chunk", { delta });
+                }
+            }
             console.log("🧠 AI Answer:", answerText);
 
         } catch (apiError) {
@@ -217,6 +239,7 @@ No data available. Say: "I don't have that information yet. Please ask about my 
             } else {
                 answerText = "I'm having trouble processing your question right now. Please try again.";
             }
+            sendEvent("chunk", { delta: answerText });
         }
 
         // 🔊 6️⃣ Convert Answer → Voice (DISABLED - Using Client-Side TTS)
@@ -228,16 +251,23 @@ No data available. Say: "I don't have that information yet. Please ask about my 
             console.error("QnA insert error:", insertError);
         }
 
-        // 📤 8️⃣ Send to frontend
-        res.json({
+        // 📤 8️⃣ Final event carries the full answer + metadata so the client
+        // doesn't need to reconstruct it from chunks itself.
+        sendEvent("done", {
             success: true,
             question,
             answer: answerText,
             audio: audioUrl,
         });
+        res.end();
 
     } catch (err) {
         console.error("❌ askQuestion Error:", err);
-        res.status(500).json({ error: "Failed to answer question" });
+        if (res.headersSent) {
+            res.write(`event: error\ndata: ${JSON.stringify({ error: "Failed to answer question" })}\n\n`);
+            res.end();
+        } else {
+            res.status(500).json({ error: "Failed to answer question" });
+        }
     }
 };
