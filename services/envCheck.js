@@ -1,8 +1,7 @@
 const REQUIRED_VARS = [
     'SUPABASE_URL',
     'SUPABASE_SERVICE_ROLE_KEY',
-    'GEMINI_API_KEY', // used for answer-generation LLM (Gemini)
-    'GROQ_API_KEY',   // used for voice question transcription (Whisper)
+    'GROQ_API_KEY', // used for answer-generation LLM (Groq) and voice question transcription (Whisper)
 ];
 
 // Fails fast with a clear message instead of letting the process crash

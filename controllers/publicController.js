@@ -2,25 +2,10 @@
 const supabase = require("../services/supabaseClient");
 const { similaritySearch } = require("../services/embeddingService");
 const { speechToText } = require("../services/audioService");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const Groq = require("groq-sdk");
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const geminiModel = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
-    generationConfig: {
-        maxOutputTokens: 150,
-        temperature: 0.7,
-        // gemini-2.5-flash reasons internally before answering by default,
-        // spending part of maxOutputTokens on invisible "thinking" tokens —
-        // for short factual Q&A over retrieved context that's wasted budget
-        // and was silently truncating answers (thinking ate ~140/150 tokens,
-        // finishReason: MAX_TOKENS). Disabled so the full budget goes to the
-        // visible answer.
-        thinkingConfig: {
-            thinkingBudget: 0,
-        },
-    },
-});
+const groqClient = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const GROQ_CHAT_MODEL = "llama-3.3-70b-versatile";
 
 const MAX_VOICE_BASE64_LENGTH = 5 * 1024 * 1024;
 const MAX_CONTEXT_LENGTH = 2000;
@@ -162,16 +147,21 @@ ${safeQuestion}
 
 No data available. Say: "I don't have that information yet. Please ask about my professional background, skills, or experience!"`;
 
-        // 🤖 5️⃣ Get Answer from Gemini with error handling
+        // 🤖 5️⃣ Get Answer from Groq with error handling
         let answerText;
 
         try {
-            const result = await geminiModel.generateContent(prompt);
-            answerText = result.response.text().trim();
+            const completion = await groqClient.chat.completions.create({
+                model: GROQ_CHAT_MODEL,
+                messages: [{ role: "user", content: prompt }],
+                max_tokens: 150,
+                temperature: 0.7,
+            });
+            answerText = completion.choices[0].message.content.trim();
             console.log("🧠 AI Answer:", answerText);
 
         } catch (apiError) {
-            console.error("❌ Gemini API Error:", apiError);
+            console.error("❌ Groq API Error:", apiError);
 
             const status = apiError.status || apiError.statusCode;
             if (status === 401 || status === 403) {
