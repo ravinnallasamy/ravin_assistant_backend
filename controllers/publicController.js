@@ -42,6 +42,41 @@ function sanitizeForPrompt(text, maxLength) {
         .slice(0, maxLength);
 }
 
+// Expands a raw user question into a short, keyword-dense search query
+// tailored for embedding + vector search against resume/bio/portfolio text.
+// This runs BEFORE embedding, not instead of it — the LLM never sees or
+// touches the retrieved DATA here, it only reformulates the QUESTION so the
+// local MiniLM embedder has better surface-level overlap with how a resume
+// is actually worded (e.g. "what do you do" → "current role job title
+// profession occupation work responsibilities"). On any Groq failure this
+// falls back to the original question untouched.
+async function rewriteQueryForRetrieval(question) {
+    const safeQuestion = sanitizeForPrompt(question, 500);
+    try {
+        const completion = await groqClient.chat.completions.create({
+            model: GROQ_CHAT_MODEL,
+            messages: [
+                {
+                    role: "user",
+                    content: `Rewrite the question below into a short list of search keywords/phrases suitable for finding matching content in someone's resume, bio, and portfolio. Expand abbreviations and casual phrasing into likely resume terminology (e.g. skills, job titles, technologies, companies, education, contact info). Output ONLY the keywords/phrases, space-separated, no explanations, no punctuation, max 30 words.
+
+<QUESTION>
+${safeQuestion}
+</QUESTION>`,
+                },
+            ],
+            max_tokens: 60,
+            temperature: 0,
+        });
+
+        const rewritten = completion.choices[0].message.content.trim();
+        return rewritten || question;
+    } catch (err) {
+        console.error("Query rewrite failed, using raw question:", err.message);
+        return question;
+    }
+}
+
 // -----------------------------
 // ASK QUESTION (TEXT + VOICE)
 // -----------------------------
@@ -73,11 +108,22 @@ exports.askQuestion = async (req, res) => {
 
         console.log("📌 Question:", question);
 
-        // 🔍 2️⃣3️⃣ Embed the question (query-side embedding, distinct from
+        // 🧭 2️⃣ Rewrite the raw question into a retrieval-friendly search query
+        // before embedding it. MiniLM is a small local embedder with no
+        // query/document task-type distinction (unlike Gemini's embedding API),
+        // so it matches casual/conversational phrasing to dense resume text
+        // poorly — e.g. "what tech do you use" doesn't score well against
+        // "Skills: Node.js, React, PostgreSQL...". Asking Groq to expand the
+        // question into the keywords/terms likely to appear in a resume/bio
+        // closes that gap. Falls back to the raw question on any failure so a
+        // Groq hiccup never blocks search.
+        const retrievalQuery = await rewriteQueryForRetrieval(question);
+
+        // 🔍 3️⃣ Embed the rewritten query (query-side embedding, distinct from
         // document embedding) and vector search for the top 5 relevant chunks.
         let matches = [];
         try {
-            matches = await similaritySearch(question, 5);
+            matches = await similaritySearch(retrievalQuery, 5);
         } catch (searchErr) {
             console.error("Similarity search failed:", searchErr);
             return res.status(503).json({ error: "Search is temporarily unavailable. Please try again." });
