@@ -27,13 +27,67 @@ async function initMinilmEmbedder() {
     return minilmLoadPromise;
 }
 
-// Chunk text
-function chunkText(text, size = 1000) {
+// Chunk text: splits at clean boundaries (paragraphs, lines, sentences, or spaces)
+// and maintains a small overlap (default 150 chars) to prevent context loss.
+function chunkText(text, size = 1000, overlap = 150) {
     if (!text) return [];
+    
     const chunks = [];
-    for (let i = 0; i < text.length; i += size) {
-        chunks.push(text.slice(i, i + size));
+    let start = 0;
+    
+    while (start < text.length) {
+        // If remaining text is within the size limit, just add it and finish
+        if (text.length - start <= size) {
+            const lastChunk = text.slice(start).trim();
+            if (lastChunk) chunks.push(lastChunk);
+            break;
+        }
+        
+        let end = start + size;
+        
+        // Try to find a clean split point within the last 30% of the chunk size
+        const minSplitPoint = Math.max(start + overlap, end - Math.floor(size * 0.3));
+        let splitPoint = -1;
+        
+        // slice the search segment (minSplitPoint to end)
+        const searchSegment = text.slice(minSplitPoint, end);
+        
+        // 1. Try splitting at paragraphs (\n\n)
+        const paragraphIdx = searchSegment.lastIndexOf('\n\n');
+        if (paragraphIdx !== -1) {
+            splitPoint = minSplitPoint + paragraphIdx + 2;
+        } else {
+            // 2. Try splitting at line breaks (\n)
+            const lineIdx = searchSegment.lastIndexOf('\n');
+            if (lineIdx !== -1) {
+                splitPoint = minSplitPoint + lineIdx + 1;
+            } else {
+                // 3. Try splitting at sentence boundaries (.!? followed by space)
+                const sentenceMatches = [...searchSegment.matchAll(/[.!?]\s+/g)];
+                if (sentenceMatches.length > 0) {
+                    const lastMatch = sentenceMatches[sentenceMatches.length - 1];
+                    splitPoint = minSplitPoint + lastMatch.index + lastMatch[0].length;
+                } else {
+                    // 4. Fallback to space
+                    const spaceIdx = searchSegment.lastIndexOf(' ');
+                    if (spaceIdx !== -1) {
+                        splitPoint = minSplitPoint + spaceIdx + 1;
+                    }
+                }
+            }
+        }
+        
+        // If no clean split point was found, fallback to hard cutoff
+        if (splitPoint === -1 || splitPoint <= start) {
+            splitPoint = end;
+        }
+        
+        const chunk = text.slice(start, splitPoint).trim();
+        if (chunk) chunks.push(chunk);
+        
+        start = splitPoint - overlap;
     }
+    
     return chunks;
 }
 
@@ -111,7 +165,7 @@ async function similaritySearch(query, k = 5) {
     const { data, error } = await supabase.rpc("match_embeddings", {
         query_embedding_gemini: null,
         query_embedding_minilm: vector,
-        match_threshold: 0.2,
+        match_threshold: 0.05,
         match_count: k
     });
 

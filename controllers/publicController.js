@@ -64,10 +64,17 @@ const RETRIEVAL_SYNONYMS = {
     study: "education degree university college",
     experience: "experience work history background",
     company: "company employer organization",
-    contact: "contact phone email reach",
-    reach: "contact phone email",
-    phone: "phone number contact",
-    email: "email address contact",
+    contact: "contact phone email reach mobile number cell whatsapp call mail",
+    reach: "contact phone email mobile number cell whatsapp call mail",
+    phone: "phone number contact mobile call cell whatsapp",
+    mobile: "phone number contact mobile call cell whatsapp",
+    number: "phone number contact mobile call cell whatsapp",
+    cell: "phone number contact mobile call cell whatsapp",
+    call: "phone number contact mobile call cell whatsapp",
+    whatsapp: "phone number contact mobile call cell whatsapp",
+    email: "email address contact gmail mail",
+    gmail: "email address contact gmail mail",
+    mail: "email address contact gmail mail",
     background: "background bio profile summary about",
     yourself: "bio profile summary background introduction",
 };
@@ -129,32 +136,82 @@ exports.askQuestion = async (req, res) => {
             return res.status(503).json({ error: "Search is temporarily unavailable. Please try again." });
         }
 
-        // 🔍 3.5️⃣ Explicitly fetch profile details (bio, resume, portfolio, github) if the
-        // question is about identity, background, or professional experience (including projects,
-        // education, skills, and work history) — vector search over factual query words can miss
-        // dense text chunks, so direct force-injection is used to guarantee accuracy.
+        // 🔍 3.5️⃣ Hybrid RAG: Classify query intent and dynamically retrieve targeted full-text
+        // documents from the database (scraped resume, portfolio, github data) to supplement
+        // vector search results and guarantee accuracy on specific categories.
         let bioContext = "";
-        const bioKeywords = [
-            "yourself", "who are you", "your background", "about you", "introduction",
-            "phone number", "phone", "contact", "email", "reach you", "contact you",
-            "project", "projects", "experience", "work", "job", "career", "education",
-            "study", "university", "college", "achievement", "achievements", "skills",
-            "tech stack", "technologies", "what did you build", "what have you built",
-            "portfolio", "github", "resume", "cv"
-        ];
-        if (bioKeywords.some(k => question.toLowerCase().includes(k))) {
+        const lowercaseQuestion = question.toLowerCase();
+
+        const isProjectOrSkillQuery = () => {
+            const keywords = [
+                "project", "projects", "app", "apps", "application", "applications",
+                "system", "systems", "platform", "platforms", "built", "shipped",
+                "develop", "developed", "stack", "tech", "technology", "technologies",
+                "skills", "skill", "tools", "tooling", "expert", "expertise", "framework",
+                "frameworks", "library", "libraries", "database", "databases", "db", "dbs"
+            ];
+            return keywords.some(k => lowercaseQuestion.includes(k));
+        };
+
+        const isExperienceOrWorkQuery = () => {
+            const keywords = [
+                "experience", "experiences", "work", "job", "jobs", "career",
+                "employment", "role", "roles", "history", "position", "positions",
+                "intern", "internship", "internships", "fuzionest", "krish-tec",
+                "innovate-engineering", "company", "employer"
+            ];
+            return keywords.some(k => lowercaseQuestion.includes(k));
+        };
+
+        const isGithubQuery = () => {
+            const keywords = ["github", "git", "repo", "repos", "repository", "repositories", "code", "coding"];
+            return keywords.some(k => lowercaseQuestion.includes(k));
+        };
+
+        const isContactOrIdentityQuery = () => {
+            const keywords = [
+                "yourself", "who are you", "your background", "about you", "introduction",
+                "phone number", "phone", "contact", "email", "reach you", "contact you",
+                "mobile", "number", "call", "cell", "whatsapp", "tel", "mail", "gmail",
+                "resume", "cv", "portfolio", "education", "study", "university", "college",
+                "degree", "qualification", "qualifications", "achievement", "achievements",
+                "award", "awards"
+            ];
+            return keywords.some(k => lowercaseQuestion.includes(k));
+        };
+
+        const columnsToSelect = ["bio"];
+        if (isProjectOrSkillQuery() || isExperienceOrWorkQuery()) {
+            columnsToSelect.push("scraped_resume", "scraped_portfolio");
+        }
+        if (isGithubQuery()) {
+            columnsToSelect.push("scraped_github");
+        }
+        if (isContactOrIdentityQuery()) {
+            columnsToSelect.push("scraped_resume", "scraped_portfolio", "scraped_github");
+        }
+
+        const uniqueColumns = Array.from(new Set(columnsToSelect));
+
+        if (uniqueColumns.length > 1 || isContactOrIdentityQuery()) {
             const { data: profile, error: profileError } = await supabase
                 .from("profile")
-                .select("bio, scraped_resume, scraped_portfolio, scraped_github")
+                .select(uniqueColumns.join(", "))
                 .maybeSingle();
 
             if (profileError) {
                 console.error("Bio fetch error:", profileError);
             } else if (profile) {
                 if (profile.bio) bioContext += `BIO:\n${sanitizeForPrompt(profile.bio, 2000)}\n\n`;
-                if (profile.scraped_resume) bioContext += `FULL RESUME:\n${sanitizeForPrompt(profile.scraped_resume, 10000)}\n\n`;
-                if (profile.scraped_portfolio) bioContext += `PORTFOLIO:\n${sanitizeForPrompt(profile.scraped_portfolio, 5000)}\n\n`;
-                if (profile.scraped_github) bioContext += `GITHUB:\n${sanitizeForPrompt(profile.scraped_github, 5000)}\n\n`;
+                if (profile.scraped_resume && uniqueColumns.includes("scraped_resume")) {
+                    bioContext += `FULL RESUME:\n${sanitizeForPrompt(profile.scraped_resume, 10000)}\n\n`;
+                }
+                if (profile.scraped_portfolio && uniqueColumns.includes("scraped_portfolio")) {
+                    bioContext += `PORTFOLIO:\n${sanitizeForPrompt(profile.scraped_portfolio, 5000)}\n\n`;
+                }
+                if (profile.scraped_github && uniqueColumns.includes("scraped_github")) {
+                    bioContext += `GITHUB:\n${sanitizeForPrompt(profile.scraped_github, 5000)}\n\n`;
+                }
             }
         }
 
