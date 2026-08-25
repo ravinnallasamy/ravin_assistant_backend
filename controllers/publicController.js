@@ -5,7 +5,10 @@ const { speechToText } = require("../services/audioService");
 const Groq = require("groq-sdk");
 
 const groqClient = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const GROQ_CHAT_MODEL = "llama-3.3-70b-versatile";
+// Overridable via env so a model decommission (Groq retires model IDs
+// periodically — this constant used to be llama-3.3-70b-versatile, which
+// started 404ing) can be fixed by changing config, not redeploying code.
+const GROQ_CHAT_MODEL = process.env.GROQ_CHAT_MODEL || "openai/gpt-oss-120b";
 
 const MAX_VOICE_BASE64_LENGTH = 5 * 1024 * 1024;
 const MAX_CONTEXT_LENGTH = 15000;
@@ -276,7 +279,12 @@ No data available. Say: "I don't have that information yet. Please ask about my 
             const stream = await groqClient.chat.completions.create({
                 model: GROQ_CHAT_MODEL,
                 messages: [{ role: "user", content: prompt }],
-                max_tokens: 600,
+                // gpt-oss is a reasoning model: it spends tokens on an
+                // internal `reasoning` channel (skipped below, since we only
+                // read delta.content) before emitting the answer. That budget
+                // comes out of max_tokens, so this is set well above the ~600
+                // tokens the visible answer actually needs.
+                max_tokens: 1500,
                 temperature: 0.7,
                 stream: true,
             });
